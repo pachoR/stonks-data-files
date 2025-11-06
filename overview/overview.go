@@ -2,41 +2,31 @@ package overview
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"sync"
+	"time"
 
+	http "github.com/pachoR/go-libs/http"
 	postgres "github.com/pachoR/go-libs/postgreslib"
-)
-
-var (
-	overviewURL string
-	overviewURLOnce sync.Once
 )
 
 var symbols []string
 
-func getOverviewURL() string {
-	overviewURLOnce.Do(func () {
-		overviewURL = fmt.Sprintf("%sfunction=OVERVIEW", os.Getenv("ALPHA_URL"))
-	})
-	return overviewURL
-}
-
 func getAllSymbols() error {
 	conn, err := postgres.GetConnection()
 	if err != nil {
-		log.Printf("Error getting connection on the database: %s\n", err.Error())	
+		log.Printf("Error getting connection on the database: %s\n", err.Error())
 		return err
 	}
 
-	rows, err := conn.Query(context.Background(), "SELECT symbol FROM symbols")	
+	rows, err := conn.Query(context.Background(), "SELECT symbol FROM symbols")
 	if err != nil {
 		return err
 	}
 
-	defer rows.Close()	
+	defer rows.Close()
 
 	for rows.Next() {
 		var sym string
@@ -61,18 +51,58 @@ func getAllSymbols() error {
 	return nil
 }
 
-//func GetOverviewData(symbol string) (SymbolOverview error) {
-//	bytes, err := http.GetBody(getOverviewURL())
-//	if err != nil {
-//		return nil, err
-//	}
-//}
+func getOverviewData(symbol string) ([]byte, error) {
+	url := fmt.Sprintf("%s&symbol=%s&apikey=%s", getOverviewURL(), symbol, getApiKey())
+
+	bytes, err := http.GetBody(url)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	return bytes, nil
+}
+
+func timer() func() {
+	start := time.Now()
+	return func() {
+		log.Printf("CreateOverviewDataFile took %v\n", time.Since(start))
+	}
+}
 
 func CreateOverviewDataFile() error {
+	defer timer()()
+
 	err := getAllSymbols()
 	if err != nil {
-		log.Printf("Error at getAllSymbols: %s", err.Error())
-		return err
+		return fmt.Errorf("Error at getAllSymbols: %s", err.Error())
+	}
+
+	if len(symbols) == 0{
+		return fmt.Errorf("SYMBOLS QUERY RETURNED EMPTY")
+	}
+
+	f, err := os.Create("local/overview.ndjson")
+	if err != nil {
+		return fmt.Errorf("Error creating file at local/overview.json: %s", err.Error())
+	}
+	defer f.Close()
+
+	for _, symbol := range symbols {
+		fetchedSymbolOverview, err := getOverviewData(symbol)
+		if err != nil {
+			return fmt.Errorf("Error fetchingSymbol %s: %s", symbol, err.Error())
+		}
+
+		var jsonSymbol interface{}
+		err = json.Unmarshal(fetchedSymbolOverview, &jsonSymbol)
+
+		trimmedJson, _ := json.Marshal(jsonSymbol)
+		_, err = f.WriteString(string(trimmedJson) + "\n")
+		if err != nil {
+			log.Printf("Error on writing the following json object: %s", string(trimmedJson))
+			return fmt.Errorf("Error writing symbol %s: %s", symbol, err.Error())
+		}
+		log.Printf("Writing info for symbol: %s", symbol)
 	}
 
 	return nil
