@@ -1,0 +1,16 @@
+{
+    "properties": {
+        "description": {
+            "type": "text"
+        },
+        "displaySymbol": {
+            "type": "text"
+        },
+        "symbol": {
+            "type": "text"
+        },
+        "type": {
+            "type": "text"
+        }
+    }
+}

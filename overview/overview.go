@@ -1,15 +1,20 @@
 package overview
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"strings"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"time"
 
 	http "github.com/pachoR/go-libs/http"
+	oslib "github.com/pachoR/go-libs/oslib"
 	postgres "github.com/pachoR/go-libs/postgreslib"
+	"github.com/pachoR/stonks-data-files/overview/types"
 )
 
 var symbols []string
@@ -52,14 +57,19 @@ func getAllSymbols() error {
 }
 
 func getOverviewData(symbol string) ([]byte, error) {
-	url := fmt.Sprintf("%s&symbol=%s&apikey=%s", getOverviewURL(), symbol, getApiKey())
+	url := fmt.Sprintf("%s/search?q=%s&exchange=US", os.Getenv("FINN_URL"), symbol)
 
-	bytes, err := http.GetBody(url)
-	if err != nil {
-		return []byte{}, err
+	header := map[string]string {
+		"X-Finnhub-Token": os.Getenv("FINN_KEY"),
 	}
 
-	return bytes, nil
+	res, err := http.GetWithHeader(url, header)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	bytes, _ := io.ReadAll(res.Body)
+	return bytes, err
 }
 
 func timer() func() {
@@ -86,24 +96,86 @@ func CreateOverviewDataFile() error {
 		return fmt.Errorf("Error creating file at local/overview.json: %s", err.Error())
 	}
 	defer f.Close()
+	var notFoundSymbols []string
 
 	for _, symbol := range symbols {
+		startFetch := time.Now()
+
 		fetchedSymbolOverview, err := getOverviewData(symbol)
 		if err != nil {
 			return fmt.Errorf("Error fetchingSymbol %s: %s", symbol, err.Error())
 		}
 
-		var jsonSymbol interface{}
-		err = json.Unmarshal(fetchedSymbolOverview, &jsonSymbol)
+		var overviewSymbolMeta types.SymbolOverviewMeta
+		err = json.Unmarshal(fetchedSymbolOverview, &overviewSymbolMeta)
 
-		trimmedJson, _ := json.Marshal(jsonSymbol)
+		var overviewSymbolDetail types.SymbolOverview
+		for _, symDetail := range overviewSymbolMeta.Result {
+			if strings.EqualFold(symDetail.Symbol, symbol) {
+				overviewSymbolDetail = symDetail
+			}
+		}
+
+		if len(overviewSymbolDetail.Symbol) == 0 {
+			notFoundSymbols = append(notFoundSymbols, symbol)
+			continue
+		}
+
+		trimmedJson, _ := json.Marshal(overviewSymbolDetail)
 		_, err = f.WriteString(string(trimmedJson) + "\n")
 		if err != nil {
 			log.Printf("Error on writing the following json object: %s", string(trimmedJson))
 			return fmt.Errorf("Error writing symbol %s: %s", symbol, err.Error())
 		}
-		log.Printf("Writing info for symbol: %s", symbol)
+
+		gap := time.Second - time.Since(startFetch)
+		if gap > 0 {
+			time.Sleep(gap)
+		} else {
+			gap = 0
+		}
+		log.Printf("Writing info for symbol: %s\nWAIT for %v", symbol, gap)
 	}
 
+	fmt.Printf("Not found symbols: %d\n", len(notFoundSymbols))
+	for _, sym := range notFoundSymbols {
+		fmt.Println(sym)
+	}
+
+	return nil
+}
+
+func CreateOverviewIndex() error {
+	err := oslib.CreateIndex(IndexName, "./mapping/overview.json")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func IngestOverviewData() error {
+	f, err := os.Open("local/overview.ndjson")
+	if err != nil {
+		return fmt.Errorf("Err! Couldn't open local/overview.ndjson file %s", err.Error())
+	}
+
+	fScanner := bufio.NewScanner(f)
+	fScanner.Split(bufio.ScanLines)
+
+	for fScanner.Scan() {
+		ovwBytes := []byte(fScanner.Text())
+		var overview types.SymbolOverview
+		err := json.Unmarshal(ovwBytes, &overview)
+		if err != nil {
+			fmt.Printf("ERR! Counlnt unmarshal: %s\n%s\n", err, string(ovwBytes))
+			continue
+		}
+
+		err = oslib.IngestFromStruct(IndexName, overview)
+		if err != nil {
+			fmt.Printf("ERR! error ingesting from struct: %s\n", err.Error())
+		}
+	}
 	return nil
 }

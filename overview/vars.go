@@ -6,6 +6,8 @@ import (
 	"sync"
 )
 
+const IndexName string = "symbols-overview"
+
 var (
 	overviewURL string
 	overviewURLOnce sync.Once
